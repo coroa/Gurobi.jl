@@ -296,3 +296,10 @@ end
         end
     end
 end
+
+@testset "RawParameter" begin
+    model = Gurobi.Optimizer(GUROBI_ENV)
+    @test MOI.get(model, MOI.RawParameter("OutputFlag")) == 1
+    MOI.set(model, MOI.RawParameter("OutputFlag"), 0)
+    @test MOI.get(model, MOI.RawParameter("OutputFlag")) == 0
+end
