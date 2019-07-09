@@ -13,27 +13,15 @@ mutable struct VariableInfo
     bound::BoundType
     type::VariableType
     start::Union{Float64, Nothing}
-    name::String
-    # Storage for constraint names associated with variables because Gurobi
-    # can only store names for variables and proper constraints.
-    # We can perform an optimization and only store three strings for the
-    # constraint names because, at most, there can be three SingleVariable
-    # constraints, e.g., LessThan, GreaterThan, and Integer.
-    lessthan_name::String
-    greaterthan_interval_or_equalto_name::String
-    type_constraint_name::String
     function VariableInfo(index::MOI.VariableIndex, column::Int)
-        return new(index, column, NONE, CONTINUOUS, nothing, "", "", "", "")
+        return new(index, column, NONE, CONTINUOUS, nothing)
     end
 end
 
 mutable struct ConstraintInfo
     row::Int
     set::MOI.AbstractSet
-    # Storage for constraint names. Where possible, these are also stored in the
-    # Gurobi model.
-    name::String
-    ConstraintInfo(row::Int, set) = new(row, set, "")
+    ConstraintInfo(row::Int, set) = new(row, set)
 end
 
 mutable struct Optimizer <: MOI.ModelLike
@@ -81,11 +69,6 @@ mutable struct Optimizer <: MOI.ModelLike
     # Note: we do not have a singlevariable_constraint_info dictionary. Instead,
     # data associated with these constraints are stored in the VariableInfo
     # objects.
-
-    # Mappings from variable and constraint names to their indices. These are
-    # lazily built on-demand, so most of the time, they are `nothing`.
-    name_to_variable::Union{Nothing, Dict{String, MOI.VariableIndex}}
-    name_to_constraint_index::Union{Nothing, Dict{String, MOI.ConstraintIndex}}
 
     # These two flags allow us to distinguish between FEASIBLE_POINT and
     # INFEASIBILITY_CERTIFICATE when querying VariablePrimal and ConstraintDual.
@@ -160,8 +143,6 @@ function MOI.empty!(model::Optimizer)
     empty!(model.affine_constraint_info)
     empty!(model.quadratic_constraint_info)
     empty!(model.sos_constraint_info)
-    model.name_to_variable = nothing
-    model.name_to_constraint_index = nothing
     model.has_unbounded_ray = false
     model.has_infeasibility_cert = false
     empty!(model.callback_variable_primal)
@@ -176,8 +157,6 @@ function MOI.is_empty(model::Optimizer)
     length(model.affine_constraint_info) != 0 && return false
     length(model.quadratic_constraint_info) != 0 && return false
     length(model.sos_constraint_info) != 0 && return false
-    model.name_to_variable !== nothing && return false
-    model.name_to_constraint_index !== nothing && return false
     model.has_unbounded_ray && return false
     model.has_infeasibility_cert && return false
     length(model.callback_variable_primal) != 0 && return false
@@ -446,50 +425,14 @@ function MOI.delete(model::Optimizer, v::MOI.VariableIndex)
             other_info.column -= 1
         end
     end
-    model.name_to_variable = nothing
     return
 end
 
-function MOI.get(model::Optimizer, ::Type{MOI.VariableIndex}, name::String)
-    if model.name_to_variable === nothing
-        _rebuild_name_to_variable(model)
-    end
-    return get(model.name_to_variable, name, nothing)
-end
+MOI.get(model::Optimizer, ::Type{MOI.VariableIndex}, name::String) = nothing
 
-function _rebuild_name_to_variable(model::Optimizer)
-    model.name_to_variable = Dict{String, MOI.VariableIndex}()
-    for (index, info) in model.variable_info
-        if info.name == ""
-            continue
-        end
-        if haskey(model.name_to_variable, info.name)
-            model.name_to_variable = nothing
-            error("Duplicate variable name detected: $(info.name)")
-        end
-        model.name_to_variable[info.name] = index
-    end
-    return
-end
+MOI.get(model::Optimizer, ::MOI.VariableName, v::MOI.VariableIndex) = ""
 
-function MOI.get(model::Optimizer, ::MOI.VariableName, v::MOI.VariableIndex)
-    return _info(model, v).name
-end
-
-function MOI.set(
-    model::Optimizer, ::MOI.VariableName, v::MOI.VariableIndex, name::String
-)
-    info = _info(model, v)
-    info.name = name
-    if name != ""
-        set_strattrelement!(model.inner, "VarName", info.column, name)
-        _require_update(model)
-    end
-    if model.name_to_variable !== nothing && !haskey(model.name_to_variable, name)
-        model.name_to_variable[name] = v
-    end
-    return
-end
+MOI.set(model::Optimizer, ::MOI.VariableName, v::MOI.VariableIndex, name::String) = nothing
 
 ###
 ### Objectives
@@ -861,7 +804,6 @@ function MOI.delete(
     else
         info.bound = NONE
     end
-    info.lessthan_name = ""
     return
 end
 
@@ -878,7 +820,6 @@ function MOI.delete(
     else
         info.bound = NONE
     end
-    info.greaterthan_interval_or_equalto_name = ""
     return
 end
 
@@ -892,7 +833,6 @@ function MOI.delete(
     set_dblattrelement!(model.inner, "UB", info.column, Inf)
     _require_update(model)
     info.bound = NONE
-    info.greaterthan_interval_or_equalto_name = ""
     return
 end
 
@@ -906,7 +846,6 @@ function MOI.delete(
     set_dblattrelement!(model.inner, "UB", info.column, Inf)
     _require_update(model)
     info.bound = NONE
-    info.greaterthan_interval_or_equalto_name = ""
     return
 end
 
@@ -1015,7 +954,6 @@ function MOI.delete(
     set_charattrelement!(model.inner, "VType", info.column, Char('C'))
     _require_update(model)
     info.type = CONTINUOUS
-    info.type_constraint_name = ""
     return
 end
 
@@ -1045,7 +983,6 @@ function MOI.delete(
     set_charattrelement!(model.inner, "VType", info.column, Char('C'))
     _require_update(model)
     info.type = CONTINUOUS
-    info.type_constraint_name = ""
     return
 end
 
@@ -1082,7 +1019,6 @@ function MOI.delete(
     set_dblattrelement!(model.inner, "UB", info.column, Inf)
     _require_update(model)
     info.type = CONTINUOUS
-    info.type_constraint_name = ""
     return
 end
 
@@ -1123,7 +1059,6 @@ function MOI.delete(
     set_dblattrelement!(model.inner, "UB", info.column, Inf)
     _require_update(model)
     info.type = CONTINUOUS
-    info.type_constraint_name = ""
     return
 end
 
@@ -1141,34 +1076,17 @@ end
 
 function MOI.get(
     model::Optimizer, ::MOI.ConstraintName,
-    c::MOI.ConstraintIndex{MOI.SingleVariable, S}
-) where {S}
+    c::MOI.ConstraintIndex
+)
     MOI.throw_if_not_valid(model, c)
-    info = _info(model, c)
-    if S <: MOI.LessThan
-        return info.lessthan_name
-    elseif S <: Union{MOI.GreaterThan, MOI.Interval, MOI.EqualTo}
-        return info.greaterthan_interval_or_equalto_name
-    else
-        @assert S <: Union{MOI.ZeroOne, MOI.Integer, MOI.Semiinteger, MOI.Semicontinuous}
-        return info.type_constraint_name
-    end
+    return ""
 end
 
 function MOI.set(
     model::Optimizer, ::MOI.ConstraintName,
-    c::MOI.ConstraintIndex{MOI.SingleVariable, S}, name::String
-) where {S}
+    c::MOI.ConstraintIndex, name::String
+)
     MOI.throw_if_not_valid(model, c)
-    info = _info(model, c)
-    if S <: MOI.LessThan
-        info.lessthan_name = name
-    elseif S <: Union{MOI.GreaterThan, MOI.Interval, MOI.EqualTo}
-        info.greaterthan_interval_or_equalto_name = name
-    else
-        @assert S <: Union{MOI.ZeroOne, MOI.Integer, MOI.Semiinteger, MOI.Semicontinuous}
-        info.type_constraint_name = name
-    end
     return
 end
 
@@ -1274,7 +1192,6 @@ function MOI.delete(
             info.row -= 1
         end
     end
-    model.name_to_constraint_index = nothing
     delete!(model.affine_constraint_info, c.value)
     return
 end
@@ -1317,127 +1234,7 @@ function MOI.get(
     return MOI.ScalarAffineFunction(terms, 0.0)
 end
 
-function MOI.get(
-    model::Optimizer, ::MOI.ConstraintName,
-    c::MOI.ConstraintIndex{MOI.ScalarAffineFunction{Float64}, <:Any}
-)
-    return _info(model, c).name
-end
-
-function MOI.set(
-    model::Optimizer, ::MOI.ConstraintName,
-    c::MOI.ConstraintIndex{MOI.ScalarAffineFunction{Float64}, <:Any},
-    name::String
-)
-    info = _info(model, c)
-    info.name = name
-    if name != ""
-        set_strattrelement!(model.inner, "ConstrName", info.row, name)
-        _require_update(model)
-    end
-    if model.name_to_constraint_index !== nothing && !haskey(model.name_to_constraint_index, name)
-        model.name_to_constraint_index[c] = name
-    else
-        model.name_to_constraint_index = nothing
-    end
-    return
-end
-
-function MOI.get(model::Optimizer, ::Type{MOI.ConstraintIndex}, name::String)
-    if model.name_to_constraint_index === nothing
-        _rebuild_name_to_constraint_index(model)
-    end
-    index = get(model.name_to_constraint_index, name, nothing)
-    if index === nothing
-        for S in (MOI.LessThan{Float64}, MOI.GreaterThan{Float64},
-            MOI.EqualTo{Float64}, MOI.Interval{Float64}, MOI.ZeroOne,
-            MOI.Integer, MOI.Semicontinuous{Float64}, MOI.Semiinteger{Float64}
-        )
-            index_2 = MOI.get(
-                model, MOI.ConstraintIndex{MOI.SingleVariable, S}, name
-            )
-            if index_2 === nothing
-                continue
-            else
-                if index === nothing
-                    index = index_2
-                else
-                    error("Duplicate name detected: ", name)
-                end
-            end
-        end
-    end
-    return index
-end
-
-function MOI.get(
-    model::Optimizer, C::Type{MOI.ConstraintIndex{MOI.SingleVariable, S}},
-    name::String
-) where {S}
-    index = nothing
-    for (key, info) in model.variable_info
-        constraint_name = ""
-        if info.bound in _bound_enums(S)
-            if S <: MOI.LessThan
-                constraint_name = info.lessthan_name
-            else
-                constraint_name = info.greaterthan_interval_or_equalto_name
-            end
-        elseif info.type in _type_enums(S)
-            constraint_name = info.type_constraint_name
-        end
-        if constraint_name == ""
-            continue
-        elseif constraint_name == name
-            if index === nothing
-                index = key
-            else
-                error("Duplicate name detected: ", name)
-            end
-        end
-    end
-    if index === nothing
-        return nothing
-    end
-    return MOI.ConstraintIndex{MOI.SingleVariable, S}(index.value)
-end
-
-function MOI.get(
-    model::Optimizer, C::Type{MOI.ConstraintIndex{F, S}}, name::String
-) where {F, S}
-    index = MOI.get(model, MOI.ConstraintIndex, name)
-    if typeof(index) == C
-        return index::MOI.ConstraintIndex{F, S}
-    end
-    return nothing
-end
-
-function _rebuild_name_to_constraint_index(model::Optimizer)
-    model.name_to_constraint_index = Dict{String, Int}()
-    _rebuild_name_to_constraint_index_util(
-        model, model.affine_constraint_info, MOI.ScalarAffineFunction{Float64}
-    )
-    _rebuild_name_to_constraint_index_util(
-        model, model.quadratic_constraint_info, MOI.ScalarQuadraticFunction{Float64}
-    )
-    _rebuild_name_to_constraint_index_util(
-        model, model.sos_constraint_info, MOI.VectorOfVariables
-    )
-    return
-end
-
-function _rebuild_name_to_constraint_index_util(model::Optimizer, dict, F)
-    for (index, info) in dict
-        info.name == "" && continue
-        if haskey(model.name_to_constraint_index, info.name)
-            model.name_to_constraint_index = nothing
-            error("Duplicate variable name detected: $(info.name)")
-        end
-        model.name_to_constraint_index[info.name] =
-            MOI.ConstraintIndex{F, typeof(info.set)}(index)
-    end
-    return
-end
+MOI.get(model::Optimizer, ::Type{<:MOI.ConstraintIndex}, name::String) = nothing
 
 ###
 ### ScalarQuadraticFunction-in-SCALAR_SET
@@ -1493,7 +1290,6 @@ function MOI.delete(
             info_2.row -= 1
         end
     end
-    model.name_to_constraint_index = nothing
     delete!(model.quadratic_constraint_info, c.value)
     return
 end
@@ -1538,30 +1334,6 @@ function MOI.get(
     end
     constant = get_dblattr(model.inner, "ObjCon")
     return MOI.ScalarQuadraticFunction(affine_terms, quadratic_terms, constant)
-end
-
-function MOI.get(
-    model::Optimizer, ::MOI.ConstraintName,
-    c::MOI.ConstraintIndex{MOI.ScalarQuadraticFunction{Float64}, S}
-) where {S}
-    return _info(model, c).name
-end
-
-function MOI.set(
-    model::Optimizer, ::MOI.ConstraintName,
-    c::MOI.ConstraintIndex{MOI.ScalarQuadraticFunction{Float64}, S},
-    name::String
-) where {S}
-    info = _info(model, c)
-    set_strattrelement!(model.inner, "QCName", info.row, name)
-    _require_update(model)
-    info.name = name
-    if model.name_to_constraint_index !== nothing && !haskey(model.name_to_constraint_index, name)
-        model.name_to_constraint_index[c] = name
-    else
-        model.name_to_constraint_index = nothing
-    end
-    return
 end
 
 ###
@@ -1622,26 +1394,6 @@ function MOI.delete(
         end
     end
     delete!(model.sos_constraint_info, c.value)
-    return
-end
-
-function MOI.get(
-    model::Optimizer, ::MOI.ConstraintName,
-    c::MOI.ConstraintIndex{MOI.VectorOfVariables, <:Any}
-)
-    return _info(model, c).name
-end
-
-function MOI.set(
-    model::Optimizer, ::MOI.ConstraintName,
-    c::MOI.ConstraintIndex{MOI.VectorOfVariables, <:Any}, name::String
-)
-    _info(model, c).name = name
-    if model.name_to_constraint_index !== nothing && !haskey(model.name_to_constraint_index, name)
-        model.name_to_constraint_index[c] = name
-    else
-        model.name_to_constraint_index = nothing
-    end
     return
 end
 
