@@ -911,7 +911,7 @@ function MOI.add_constraints(
     senses = Vector{Cchar}(undef, length(f))
     rhss = Vector{Float64}(undef, length(f))
     # Second pass: loop through, passing views to _indices_and_coefficients.
-    for (i, (fi, si)) in enumerate(zip(f, s))
+    for (i, (fi, si)) in enumerate(zip(canonicalized_functions, s))
         senses[i], rhss[i] = _sense_and_rhs(si)
         row_starts[i + 1] = row_starts[i] + length(fi.terms)
         _indices_and_coefficients(
